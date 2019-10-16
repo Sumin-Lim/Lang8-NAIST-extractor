@@ -28,6 +28,7 @@ def main():
     args = parse_args()
     data_num = 0
     error_num = 0
+    dataset = []
     with codecs.open(args.data_path, 'r', encoding='utf8') as f:
         for line in f:
             data_num += 1
@@ -37,11 +38,14 @@ def main():
                 orig_sents, corr_sents = jsonData[4], jsonData[5]
                 if (args.l1 == None or args.l1 == l1_lang) and args.l2 in l2_langs:
                     outputs = make_sent_pair(orig_sents, corr_sents, args)
-                    for output in outputs:
-                        print(output)
+                    dataset.extend(outputs)
+#                    for output in outputs:
+#                        print(output)
             except:
                 error_num += 1
                 pass
+
+    pkl.dump(dataset, open('../data/corrected_sentence_pair.pkl', 'wb'))
 
 def make_sent_pair(orig_sents, corr_sents, args):
     outputs = []

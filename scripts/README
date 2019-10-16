@@ -1,0 +1,6 @@
+Before running the preprocessing.py file, you should get the Lang-8 dataset 
+and run extract_err-cor-pair.py file first. preprocessing.py file requires the 
+result file after running extract_err-cor-pair.py file.
+
+When running extract_err-cor-pair.py, set the argument l2 as Korean to extract
+data of Korean language learners. 
