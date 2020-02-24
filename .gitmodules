@@ -1,3 +1,5 @@
 [submodule "KoBERT"]
 	path = KoBERT
 	url = https://github.com/SKTBrain/KoBERT.git
+[submodule "lang8"]
+	update = rebase
