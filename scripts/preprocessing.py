@@ -5,6 +5,8 @@ Usage: python preprocessing.py -d [file path] -o [file path]
 -d: pickled result file path after running extract_err-cor-pair.py
 -o: file path to save the result of this script
 '''
+import sys 
+sys.path.insert(1, '../KoBERT/')
 import pickle as pkl
 from tqdm import tqdm 
 import pandas as pd
@@ -13,135 +15,97 @@ import argparse
 
 import math
 import torch
-from kobert.pytorch_kobert import get_pytorch_kobert_model
 from gluonnlp.data import SentencepieceTokenizer
 from kobert.utils import get_tokenizer
-from Levenshtein import distance
+from levenshtein import *
+from hangul_util import *
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-d', '--datafile', required=True, nargs=1, type=str)
-    parser.add_argument('-o', '--output', required=True, nargs=1, type=str)
+    parser.add_argument('-d', '--datafile', nargs=1, type=str, default='../data/corrected_sentence_pair.pkl')
+    parser.add_argument('-o', '--output', nargs=1, type=str, default='../data/korean_lang8.csv')
     args = parser.parse_args()
     return args
 
 def load_data(file_path):
-    dataset = [] 
+    original = []
+    corrected = []
     with open(file_path, 'rb') as f:
         data = pkl.load(f)
         for line in tqdm(data):
-            dataset.append(line.strip().split('\t'))
-    return dataset
+            o, c = line.split('\t')
+            original.append(o)
+            corrected.append(c)
 
-def is_hangul(x):
-    # detect the ratio of hangul 
-    han_count = ' '.join(re.findall(u'[\u3130-\u318F\uAC00-\uD7A3]+', x))
-    return len(han_count) / len(x)
-
-def is_chinese(x):
-    # detect chinese
-    return len(re.findall(u'[\u4e00-\u9FFF]', x)) > 0
-
-def split_space(x):
-    # detect one word, to drop them 
-    return len(x.split()) == 1
-
-def drop_non_hangul(df):
-    # drop non korean sentences and drop rows with the ratio of korean under 70%
-    df = df.dropna()
-    df = df.copy()
-
-    df['0_hangul'] = df[0].apply(lambda x: is_hangul(x))
-    df['1_hangul'] = df[1].apply(lambda x: is_hangul(x))
-    df = df.loc[(df['0_hangul'] > 0.7) & (df['1_hangul'] > 0.7)][[0, 1]]
+    df = pd.DataFrame({'original': original, 'corrected': corrected})
     return df
 
-def drop_chinese(df):
-    # drop sentences containing chinese characters
-    df = df.dropna()
-    df = df.copy()
-
-    df['0_chinese'] = df[0].apply(lambda x: is_chinese(x))
-    df['1_chinese'] = df[1].apply(lambda x: is_chinese(x))
-    df = df.loc[(df['0_chinese']==False) & (df['1_chinese']==False)][[0, 1]]
+def drop_other_lang(df):
+    hangul = re.compile('[^ ㄱ-ㅎㅏ-ㅣ가-힣0-9a-zA-Z@#$%&\(\){|}\[\]\/\-><=_:;.,?!~\^"（）\'‘’]+')
+    df['o_hangul_len'] = df['original'].apply(lambda x: len(list(set(hangul.findall(x)))))
+    df['c_hangul_len'] = df['corrected'].apply(lambda x: len(list(set(hangul.findall(x)))))
+    
+    df = df[(df['o_hangul_len']==0) & (df['c_hangul_len']==0)][['original', 'corrected']]
     return df
 
-def str_replace(df):
-    # drop rows with values of <-, ->, /
-    # replace strings in parentheses to null string
-    df['0_replace'] = df[0].str.replace(r'\(.*\)', '')
-    df['1_replace'] = df[1].str.replace(r'\(.*\)', '')
-
-    df = df[~df['0_replace'].str.contains('<-')]
-    df = df[~df['0_replace'].str.contains('->')]
-    df = df[~df['0_replace'].str.contains('/')]
-
-    df = df[~df['1_replace'].str.contains('<-')]
-    df = df[~df['1_replace'].str.contains('->')]
-    df = df[~df['1_replace'].str.contains('/')]
-    return df
-
-def drop_one_word(df):
-    # drop one word sentences
-    df['0_split'] = df['0_replace'].apply(lambda x: split_space(x))
-    df['1_split'] = df['1_replace'].apply(lambda x: split_space(x))
-    df = df.loc[(df['0_split']==False) & (df['1_split']==False)][['0_replace', '1_replace']]
-    return df
-
-
-def get_ratio(*x):
-    # calculate ratio
-    distance = x[0]
-    min_words = x[1]
-    return distance / float(min_words) * math.log(min_words, 20)
-
-def make_ratio(df):
-    # make ratio column in dataframe
-    df['is_same'] = df['original'].str.strip() == df['corrected'].str.strip()
-    df = df[df['is_same']==False][['original', 'corrected']]
+def calc_vars(df):
+    df['jamo_levenshtein'] = df.apply(lambda row: jamo_levenshtein(row['original'], row['corrected']), axis=1)
 
     tok_path = get_tokenizer()
     sp = SentencepieceTokenizer(tok_path)
+    df['0_tokens'] = df['original'].apply(lambda x: len(sp(x)))
+    df['1_tokens'] = df['corrected'].apply(lambda x: len(sp(x)))
+    df['1_token/0_token'] = df['1_tokens'] / df['0_tokens']
+    df['min_tokens'] = df[['0_tokens', '1_tokens']].min(axis=1)
+    
+    df = df[df['min_tokens'] > 0]
+    df['log_tokens'] = df['min_tokens'].apply(lambda x: math.log(x, 20))
+    df['ratio'] = df['jamo_levenshtein'] / df['min_tokens'] * df['log_tokens']
+    
+    df['0_len'] = df['original'].apply(lambda x: len(x))
+    df['1_len'] = df['corrected'].apply(lambda x: len(x))
+    df['len_ratio'] = df['1_len'] / df['0_len']
 
-    def get_min_words(*x):
-        # get the minimum number of tokens in two sentences, which is used in calculating ratio
-        old_tokens = sp(x[0])
-        new_tokens = sp(x[1])
-        return min(len(old_tokens), len(new_tokens))
+    return df
 
-    df['min_words'] = df[['original', 'corrected']].apply(lambda x: get_min_words(*x), axis=1)
-    df['distance'] = df[['original', 'corrected']].apply(lambda x: distance(*x), axis=1)
-    df = df[df['min_words'] != 0]
-    df['ratio'] = df[['distance', 'min_words']].apply(lambda x: get_ratio(*x), axis=1)
+def apply_cond(df):
+    token_ratio_cond = (df['1_token/0_token']<4) & (df['1_token/0_token']>0.25)
+    len_ratio_cond = (df['len_ratio']<1.25) & (df['len_ratio']>0.5)
+    min_token_cond = (df['min_tokens']>5)
+
+    df = df[token_ratio_cond & len_ratio_cond & min_token_cond]
+    df = df[(~df['corrected'].str.contains('or')) & (~df['corrected'].str.contains('good'))]
+    df = df[df['original'].str.strip() != df['corrected'].str.strip()]
+    df = df.drop_duplicates()
+
     return df
 
 def main():
     args = parse_args()
 
     print('1. Load data')
-    df = pd.DataFrame(load_data(args.datafile[0]))
+    df = load_data(args.datafile)
+    print('dataset shape:', df.shape, '\n')
 
-    print('2. Drop rows with the ratio of Korean under 70% and rows containing Chinese')
-    df_drop_hangul = drop_non_hangul(df)
-    df_drop_chinese = drop_chinese(df_drop_hangul)
-
-    print('3. Drop rows with special characters and rows with one word')
-    df_replace = str_replace(df_drop_chinese)
-    df_drop = drop_one_word(df_replace)
-
-    df = df_drop.rename(columns={'0_replace':'original',
-                                 '1_replace':'corrected'})
-    print('4. Make edit ratio')
-    df = make_ratio(df)
-    df = df[df['ratio'] < 1]
-
+    print('2. Drop NaN and rows whose original and corrected sentences are the same')
     df = df.dropna()
-    df = df.drop_duplicates()
-    print('Data shape:', df.shape)
-    
-    print('5. Save data')
-    df_sorted = df.sort_values(by='ratio', ascending=False)
-    df_sorted.to_csv(args.output[0], index=False, encoding='utf-8')
+    df = df[df['original'].str.strip() != df['corrected'].str.strip()]
+    df = df[(~df['original'].str.contains('[a-zA-Z]+')) & (~df['corrected'].str.contains('[a-zA-Z]+'))]
+    print('dataset shape:', df.shape, '\n')
+
+    print('3. Drop rows of other languages')
+    df = drop_other_lang(df)
+    print('dataset shape:', df.shape, '\n')
+
+    print('4. Calculate variables and apply conditions')
+    df = calc_vars(df)
+    df = apply_cond(df)
+    print('dataset shape:', df.shape, '\n')
+
+    print('5. Save')
+    df.to_csv(args.output, index=False)
+    print('Done!')
+
 
 
 if __name__ == '__main__':
